@@ -455,7 +455,7 @@ class BlinkDetector:
         )
 
     def process_frames(
-        self, frames: list[np.ndarray], draw: bool = False
+        self, frames: list[np.ndarray], draw: bool = False, stop_on_blink: bool = False
     ) -> list[BlinkResult]:
         """
         Process multiple image frames for blink detection.
@@ -463,6 +463,7 @@ class BlinkDetector:
         Args:
             frames: List of BGR image frames (numpy arrays)
             draw: Whether to draw annotations on frames
+            stop_on_blink: If True, stop processing when a blink is detected
 
         Returns:
             List of BlinkResult objects (None entries for frames with no face detected)
@@ -471,10 +472,16 @@ class BlinkDetector:
         for frame in frames:
             result = self.process_frame(frame, draw=draw)
             results.append(result)
+            if stop_on_blink and result and result.blink:
+                print(f"Blink detected! Stopping processing at frame {len(results)}.")
+                break
         return results
 
     def run_on_camera(
-        self, camera_id: int = 0, window_name: str = "Blink Detection"
+        self,
+        camera_id: int = 0,
+        window_name: str = "Blink Detection",
+        stop_on_blink: bool = False,
     ) -> None:
         """
         Run blink detection on live camera feed.
@@ -484,6 +491,7 @@ class BlinkDetector:
         Args:
             camera_id: Camera device ID (default: 0)
             window_name: Name of the display window
+            stop_on_blink: If True, stop processing when a blink is detected
         """
         cap = cv2.VideoCapture(camera_id)
 
@@ -519,6 +527,9 @@ class BlinkDetector:
 
                 if result and result.frame is not None:
                     cv2.imshow(window_name, result.frame)
+                    if stop_on_blink and result.blink:
+                        print("Blink detected! Stopping camera feed.")
+                        break
                 else:
                     # Show original frame with "No face detected" message
                     cv2.putText(
@@ -550,6 +561,7 @@ class BlinkDetector:
         window_name: str = "Blink Detection",
         show_preview: bool = True,
         frame_skip: int = 0,
+        stop_on_blink: bool = False,
     ) -> list[BlinkResult]:
         """
         Run blink detection on a video file.
@@ -560,6 +572,7 @@ class BlinkDetector:
             window_name: Name of the display window
             show_preview: Whether to show live preview while processing
             frame_skip: Process every n-th frame (0 = process all frames, 1 = every other frame, etc.)
+            stop_on_blink: If True, stop processing when a blink is detected
 
         Returns:
             List of BlinkResult objects for each frame
@@ -630,6 +643,13 @@ class BlinkDetector:
 
                     if show_preview:
                         cv2.imshow(window_name, display_frame)
+
+                    # Check if we should stop on blink
+                    if stop_on_blink and result.blink:
+                        print(
+                            f"Blink detected at frame {frame_num}! Stopping processing."
+                        )
+                        break
                 else:
                     if writer:
                         writer.write(frame)
@@ -720,6 +740,11 @@ def main():
         default=0,
         help="Process every n-th frame (0=all, 1=every other, 2=every 3rd, etc.)",
     )
+    parser.add_argument(
+        "--stop-on-blink",
+        action="store_true",
+        help="Stop processing when a blink is detected",
+    )
 
     args = parser.parse_args()
 
@@ -734,7 +759,11 @@ def main():
         if args.mode == "camera":
             print("Starting live camera blink detection...")
             print(f"EAR threshold: {args.threshold}")
-            detector.run_on_camera(camera_id=args.camera)
+            if args.stop_on_blink:
+                print("Stop-on-blink mode enabled")
+            detector.run_on_camera(
+                camera_id=args.camera, stop_on_blink=args.stop_on_blink
+            )
 
         elif args.mode == "video":
             if not args.video:
@@ -743,11 +772,14 @@ def main():
             print(f"Processing video: {args.video}")
             if args.skip > 0:
                 print(f"Processing every {args.skip + 1} frame(s)")
+            if args.stop_on_blink:
+                print("Stop-on-blink mode enabled")
             results = detector.run_on_video(
                 video_path=args.video,
                 output_path=args.output,
                 show_preview=True,
                 frame_skip=args.skip,
+                stop_on_blink=args.stop_on_blink,
             )
             print(f"Processed {len(results)} frames")
 
