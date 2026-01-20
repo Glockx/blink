@@ -79,24 +79,36 @@ class BlinkDetector:
         if model_path is None:
             model_path = self._get_model_path()
 
-        # Initialize MediaPipe Face Landmarker
-        base_options = python.BaseOptions(model_asset_path=model_path)
-        options = vision.FaceLandmarkerOptions(
-            base_options=base_options,
-            running_mode=vision.RunningMode.IMAGE,
-            num_faces=max_num_faces,
-            min_face_detection_confidence=min_detection_confidence,
-            min_face_presence_confidence=min_tracking_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-            output_face_blendshapes=False,
-            output_facial_transformation_matrixes=False,
-        )
-        self.face_landmarker = vision.FaceLandmarker.create_from_options(options)
+        # Store configuration for creating landmarkers
+        self._model_path = model_path
+        self._max_num_faces = max_num_faces
+        self._min_detection_confidence = min_detection_confidence
+        self._min_tracking_confidence = min_tracking_confidence
+
+        # Initialize MediaPipe Face Landmarker (IMAGE mode for single frames)
+        self.face_landmarker = self._create_landmarker(vision.RunningMode.IMAGE)
 
         # State tracking
         self.blink_count = 0
         self.frame_counter = 0  # Frames with EAR below threshold
         self.blink_in_progress = False
+
+    def _create_landmarker(
+        self, running_mode: vision.RunningMode
+    ) -> vision.FaceLandmarker:
+        """Create a FaceLandmarker with the specified running mode."""
+        base_options = python.BaseOptions(model_asset_path=self._model_path)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=running_mode,
+            num_faces=self._max_num_faces,
+            min_face_detection_confidence=self._min_detection_confidence,
+            min_face_presence_confidence=self._min_tracking_confidence,
+            min_tracking_confidence=self._min_tracking_confidence,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+        )
+        return vision.FaceLandmarker.create_from_options(options)
 
     def _get_model_path(self) -> str:
         """Get the model path, downloading if necessary."""
@@ -304,6 +316,144 @@ class BlinkDetector:
             frame=annotated_frame,
         )
 
+    def _process_frame_with_landmarker(
+        self,
+        frame: np.ndarray,
+        landmarker: vision.FaceLandmarker,
+        timestamp_ms: int,
+        draw: bool = True,
+    ) -> Optional[BlinkResult]:
+        """
+        Process a frame using a specific landmarker with VIDEO mode (requires timestamp).
+
+        Args:
+            frame: BGR image frame (numpy array)
+            landmarker: FaceLandmarker instance (must be in VIDEO mode)
+            timestamp_ms: Frame timestamp in milliseconds
+            draw: Whether to draw annotations on the frame
+
+        Returns:
+            BlinkResult object or None if no face detected
+        """
+        if frame is None:
+            return None
+
+        # Convert BGR to RGB for MediaPipe
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+
+        # Detect face landmarks with timestamp (VIDEO mode)
+        results = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+        if not results.face_landmarks:
+            return None
+
+        # Get the first face landmarks
+        face_landmarks = results.face_landmarks[0]
+
+        # Calculate EAR for both eyes
+        left_ear = self._calculate_ear(
+            face_landmarks, self.LEFT_EYE_INDICES, frame.shape
+        )
+        right_ear = self._calculate_ear(
+            face_landmarks, self.RIGHT_EYE_INDICES, frame.shape
+        )
+        avg_ear = (left_ear + right_ear) / 2.0
+
+        # Detect blinks
+        left_blink = left_ear < self.ear_threshold
+        right_blink = right_ear < self.ear_threshold
+
+        # Track consecutive frames for blink counting
+        if avg_ear < self.ear_threshold:
+            self.frame_counter += 1
+        else:
+            if self.frame_counter >= self.consecutive_frames:
+                self.blink_count += 1
+                self.blink_in_progress = False
+            self.frame_counter = 0
+
+        # Current blink state
+        blink = left_blink and right_blink
+
+        # Draw annotations if requested
+        annotated_frame = None
+        if draw:
+            annotated_frame = frame.copy()
+
+            # Draw eye landmarks
+            eye_color = (
+                (0, 0, 255) if blink else (0, 255, 0)
+            )  # Red if blinking, green otherwise
+            self._draw_eye_landmarks(
+                annotated_frame, face_landmarks, self.LEFT_EYE_INDICES, eye_color
+            )
+            self._draw_eye_landmarks(
+                annotated_frame, face_landmarks, self.RIGHT_EYE_INDICES, eye_color
+            )
+
+            # Draw info text
+            cv2.putText(
+                annotated_frame,
+                f"EAR: {avg_ear:.3f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+            )
+            cv2.putText(
+                annotated_frame,
+                f"Blinks: {self.blink_count}",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+            )
+            cv2.putText(
+                annotated_frame,
+                f"Left EAR: {left_ear:.3f}",
+                (10, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 0),
+                1,
+            )
+            cv2.putText(
+                annotated_frame,
+                f"Right EAR: {right_ear:.3f}",
+                (10, 115),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 0),
+                1,
+            )
+
+            if blink:
+                cv2.putText(
+                    annotated_frame,
+                    "BLINK!",
+                    (10, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (0, 0, 255),
+                    2,
+                )
+
+        return BlinkResult(
+            left_ear=left_ear,
+            right_ear=right_ear,
+            avg_ear=avg_ear,
+            left_blink=left_blink,
+            right_blink=right_blink,
+            blink=blink,
+            blink_count=self.blink_count,
+            frame=annotated_frame,
+        )
+
     def process_frames(
         self, frames: list[np.ndarray], draw: bool = False
     ) -> list[BlinkResult]:
@@ -329,6 +479,8 @@ class BlinkDetector:
         """
         Run blink detection on live camera feed.
 
+        Uses VIDEO running mode for better tracking performance.
+
         Args:
             camera_id: Camera device ID (default: 0)
             window_name: Name of the display window
@@ -344,8 +496,12 @@ class BlinkDetector:
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_FPS, 30)
 
+        # Create VIDEO mode landmarker for better tracking
+        video_landmarker = self._create_landmarker(vision.RunningMode.VIDEO)
+
         print("Press 'q' to quit, 'r' to reset blink count")
 
+        frame_timestamp_ms = 0
         try:
             while True:
                 ret, frame = cap.read()
@@ -356,7 +512,10 @@ class BlinkDetector:
                 # Mirror the frame for more intuitive interaction
                 frame = cv2.flip(frame, 1)
 
-                result = self.process_frame(frame, draw=True)
+                result = self._process_frame_with_landmarker(
+                    frame, video_landmarker, frame_timestamp_ms, draw=True
+                )
+                frame_timestamp_ms += 33  # ~30 FPS
 
                 if result and result.frame is not None:
                     cv2.imshow(window_name, result.frame)
@@ -380,6 +539,7 @@ class BlinkDetector:
                     self.reset()
                     print("Blink count reset")
         finally:
+            video_landmarker.close()
             cap.release()
             cv2.destroyAllWindows()
 
@@ -389,6 +549,7 @@ class BlinkDetector:
         output_path: Optional[str] = None,
         window_name: str = "Blink Detection",
         show_preview: bool = True,
+        frame_skip: int = 0,
     ) -> list[BlinkResult]:
         """
         Run blink detection on a video file.
@@ -398,6 +559,7 @@ class BlinkDetector:
             output_path: Path to save the annotated video (optional)
             window_name: Name of the display window
             show_preview: Whether to show live preview while processing
+            frame_skip: Process every n-th frame (0 = process all frames, 1 = every other frame, etc.)
 
         Returns:
             List of BlinkResult objects for each frame
@@ -416,6 +578,10 @@ class BlinkDetector:
 
         print(f"Video: {width}x{height} @ {fps}fps, {total_frames} frames")
 
+        # Create VIDEO mode landmarker for better tracking
+        video_landmarker = self._create_landmarker(vision.RunningMode.VIDEO)
+        frame_duration_ms = int(1000 / fps) if fps > 0 else 33
+
         # Setup video writer if output path provided
         writer = None
         if output_path:
@@ -432,7 +598,16 @@ class BlinkDetector:
                     break
 
                 frame_num += 1
-                result = self.process_frame(frame, draw=True)
+
+                # Skip frames if frame_skip is set
+                if frame_skip > 0 and (frame_num - 1) % (frame_skip + 1) != 0:
+                    results.append(None)
+                    continue
+
+                timestamp_ms = frame_num * frame_duration_ms
+                result = self._process_frame_with_landmarker(
+                    frame, video_landmarker, timestamp_ms, draw=True
+                )
                 results.append(result)
 
                 if result and result.frame is not None:
@@ -474,6 +649,7 @@ class BlinkDetector:
                     )
 
         finally:
+            video_landmarker.close()
             cap.release()
             if writer:
                 writer.release()
@@ -538,6 +714,12 @@ def main():
         default=None,
         help="Path to face_landmarker.task model file",
     )
+    parser.add_argument(
+        "--skip",
+        type=int,
+        default=0,
+        help="Process every n-th frame (0=all, 1=every other, 2=every 3rd, etc.)",
+    )
 
     args = parser.parse_args()
 
@@ -559,8 +741,13 @@ def main():
                 print("Error: Please provide --video path for video mode")
                 return
             print(f"Processing video: {args.video}")
+            if args.skip > 0:
+                print(f"Processing every {args.skip + 1} frame(s)")
             results = detector.run_on_video(
-                video_path=args.video, output_path=args.output, show_preview=True
+                video_path=args.video,
+                output_path=args.output,
+                show_preview=True,
+                frame_skip=args.skip,
             )
             print(f"Processed {len(results)} frames")
 
