@@ -1,0 +1,11 @@
+[project]
+name = "blink"
+version = "0.1.0"
+description = "Blink detection using MediaPipe Face Mesh"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mediapipe>=0.10.31",
+    "numpy>=2.4.1",
+    "opencv-python>=4.13.0.90",
+]
