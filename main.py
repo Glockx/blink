@@ -92,6 +92,9 @@ class BlinkDetector:
         self.blink_count = 0
         self.frame_counter = 0  # Frames with EAR below threshold
         self.blink_in_progress = False
+        self.eyes_were_open = (
+            False  # Track if eyes were open before (required for valid blink)
+        )
 
     def _create_landmarker(
         self, running_mode: vision.RunningMode
@@ -229,13 +232,19 @@ class BlinkDetector:
         right_blink = right_ear < self.ear_threshold
 
         # Track consecutive frames for blink counting
+        # A valid blink requires: eyes open -> eyes close -> eyes open
         if avg_ear < self.ear_threshold:
-            self.frame_counter += 1
+            # Eyes are closed - only count if eyes were open before
+            if self.eyes_were_open:
+                self.frame_counter += 1
         else:
+            # Eyes are open
             if self.frame_counter >= self.consecutive_frames:
+                # Valid blink: eyes were open, closed for enough frames, now open again
                 self.blink_count += 1
                 self.blink_in_progress = False
             self.frame_counter = 0
+            self.eyes_were_open = True  # Mark that we've seen open eyes
 
         # Current blink state
         blink = left_blink and right_blink
@@ -367,13 +376,19 @@ class BlinkDetector:
         right_blink = right_ear < self.ear_threshold
 
         # Track consecutive frames for blink counting
+        # A valid blink requires: eyes open -> eyes close -> eyes open
         if avg_ear < self.ear_threshold:
-            self.frame_counter += 1
+            # Eyes are closed - only count if eyes were open before
+            if self.eyes_were_open:
+                self.frame_counter += 1
         else:
+            # Eyes are open
             if self.frame_counter >= self.consecutive_frames:
+                # Valid blink: eyes were open, closed for enough frames, now open again
                 self.blink_count += 1
                 self.blink_in_progress = False
             self.frame_counter = 0
+            self.eyes_were_open = True  # Mark that we've seen open eyes
 
         # Current blink state
         blink = left_blink and right_blink
@@ -687,6 +702,7 @@ class BlinkDetector:
         self.blink_count = 0
         self.frame_counter = 0
         self.blink_in_progress = False
+        self.eyes_were_open = False
 
     def close(self) -> None:
         """Release MediaPipe resources."""
