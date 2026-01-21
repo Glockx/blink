@@ -60,6 +60,7 @@ class BlinkDetector:
         min_tracking_confidence: float = 0.5,
         max_num_faces: int = 1,
         model_path: Optional[str] = None,
+        min_face_size: Optional[float] = None,
     ):
         """
         Initialize the blink detector.
@@ -71,9 +72,11 @@ class BlinkDetector:
             min_tracking_confidence: Minimum confidence for face tracking (default: 0.5)
             max_num_faces: Maximum number of faces to detect (default: 1)
             model_path: Path to the face_landmarker.task model file (will download if not provided)
+            min_face_size: Minimum face size in pixels (width or height). Faces smaller than this are skipped. (default: None = no minimum)
         """
         self.ear_threshold = ear_threshold
         self.consecutive_frames = consecutive_frames
+        self.min_face_size = min_face_size
 
         # Get or download model
         if model_path is None:
@@ -141,6 +144,27 @@ class BlinkDetector:
                 f"Please download manually from:\n{self.MODEL_URL}\n"
                 f"And place it in the current directory or pass the path via model_path parameter."
             )
+
+    def _get_face_size(
+        self, landmarks: list, frame_shape: tuple
+    ) -> tuple[float, float]:
+        """
+        Calculate the face bounding box size from landmarks.
+
+        Returns:
+            Tuple of (width, height) in pixels
+        """
+        h, w = frame_shape[:2]
+
+        # Get all landmark coordinates
+        xs = [lm.x * w for lm in landmarks]
+        ys = [lm.y * h for lm in landmarks]
+
+        # Calculate bounding box
+        face_width = max(xs) - min(xs)
+        face_height = max(ys) - min(ys)
+
+        return face_width, face_height
 
     def _calculate_ear(
         self, landmarks: list, indices: list, frame_shape: tuple
@@ -217,6 +241,12 @@ class BlinkDetector:
 
         # Get the first face landmarks
         face_landmarks = results.face_landmarks[0]
+
+        # Check if face is too small
+        if self.min_face_size is not None:
+            face_width, face_height = self._get_face_size(face_landmarks, frame.shape)
+            if face_width < self.min_face_size or face_height < self.min_face_size:
+                return None  # Face too small, skip
 
         # Calculate EAR for both eyes
         left_ear = self._calculate_ear(
@@ -361,6 +391,12 @@ class BlinkDetector:
 
         # Get the first face landmarks
         face_landmarks = results.face_landmarks[0]
+
+        # Check if face is too small
+        if self.min_face_size is not None:
+            face_width, face_height = self._get_face_size(face_landmarks, frame.shape)
+            if face_width < self.min_face_size or face_height < self.min_face_size:
+                return None  # Face too small, skip
 
         # Calculate EAR for both eyes
         left_ear = self._calculate_ear(
@@ -761,6 +797,12 @@ def main():
         action="store_true",
         help="Stop processing when a blink is detected",
     )
+    parser.add_argument(
+        "--min-face-size",
+        type=int,
+        default=None,
+        help="Minimum face size in pixels (width or height). Faces smaller than this are skipped.",
+    )
 
     args = parser.parse_args()
 
@@ -769,12 +811,15 @@ def main():
         ear_threshold=args.threshold,
         consecutive_frames=args.consecutive,
         model_path=args.model,
+        min_face_size=args.min_face_size,
     )
 
     try:
         if args.mode == "camera":
             print("Starting live camera blink detection...")
             print(f"EAR threshold: {args.threshold}")
+            if args.min_face_size:
+                print(f"Minimum face size: {args.min_face_size}px")
             if args.stop_on_blink:
                 print("Stop-on-blink mode enabled")
             detector.run_on_camera(
