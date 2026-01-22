@@ -61,6 +61,7 @@ class BlinkDetector:
         max_num_faces: int = 1,
         model_path: Optional[str] = None,
         min_face_size: Optional[float] = None,
+        delegate: str = "cpu",
     ):
         """
         Initialize the blink detector.
@@ -77,6 +78,7 @@ class BlinkDetector:
         self.ear_threshold = ear_threshold
         self.consecutive_frames = consecutive_frames
         self.min_face_size = min_face_size
+        self._delegate = delegate.lower()
 
         # Get or download model
         if model_path is None:
@@ -103,7 +105,16 @@ class BlinkDetector:
         self, running_mode: vision.RunningMode
     ) -> vision.FaceLandmarker:
         """Create a FaceLandmarker with the specified running mode."""
-        base_options = python.BaseOptions(model_asset_path=self._model_path)
+        if self._delegate == "gpu":
+            base_options = python.BaseOptions(
+                model_asset_path=self._model_path,
+                delegate=python.BaseOptions.Delegate.GPU,
+            )
+        else:
+            base_options = python.BaseOptions(
+                model_asset_path=self._model_path,
+                delegate=python.BaseOptions.Delegate.CPU,
+            )
         options = vision.FaceLandmarkerOptions(
             base_options=base_options,
             running_mode=running_mode,
@@ -654,6 +665,7 @@ class BlinkDetector:
 
         results = []
         frame_num = 0
+        last_timestamp_ms = -1
 
         try:
             while True:
@@ -668,7 +680,15 @@ class BlinkDetector:
                     results.append(None)
                     continue
 
-                timestamp_ms = frame_num * frame_duration_ms
+                pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+                timestamp_ms = (
+                    int(pos_msec)
+                    if pos_msec and pos_msec > 0
+                    else frame_num * frame_duration_ms
+                )
+                if timestamp_ms <= last_timestamp_ms:
+                    timestamp_ms = last_timestamp_ms + 1
+                last_timestamp_ms = timestamp_ms
                 result = self._process_frame_with_landmarker(
                     frame, video_landmarker, timestamp_ms, draw=True
                 )
@@ -755,6 +775,10 @@ def main():
     """Main function demonstrating blink detection usage."""
     import argparse
 
+    # Reduce OpenCV nondeterminism across runs
+    cv2.setNumThreads(1)
+    cv2.setUseOptimized(False)
+
     parser = argparse.ArgumentParser(description="Blink Detection using MediaPipe")
     parser.add_argument(
         "--mode",
@@ -803,6 +827,13 @@ def main():
         default=None,
         help="Minimum face size in pixels (width or height). Faces smaller than this are skipped.",
     )
+    parser.add_argument(
+        "--delegate",
+        type=str,
+        default="cpu",
+        choices=["cpu", "gpu"],
+        help="MediaPipe delegate to use (cpu is more deterministic).",
+    )
 
     args = parser.parse_args()
 
@@ -812,6 +843,7 @@ def main():
         consecutive_frames=args.consecutive,
         model_path=args.model,
         min_face_size=args.min_face_size,
+        delegate=args.delegate,
     )
 
     try:

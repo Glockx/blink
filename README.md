@@ -136,7 +136,7 @@ uv run main.py --model "path/to/face_landmarker.task"
 #### All Options Combined (Video Mode)
 
 ```bash
-uv run main.py --mode video --video "input.mp4" --output "output.mp4" --skip 2 --threshold 0.22 --consecutive 3 --stop-on-blink
+uv run main.py --mode video --video "input.mp4" --output "output.mp4" --skip 2 --threshold 0.23 --consecutive 4 --stop-on-blink
 ```
 
 #### All Options Combined (Camera Mode)
